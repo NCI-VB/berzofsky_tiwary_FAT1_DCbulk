@@ -1,0 +1,1512 @@
+---
+title: "ccrvb-31: FAT1 DC bulk RNAseq (Shweta, 18 samples)"
+author: "Kate Goldfarbmuren"
+date: "2024-07-29" #"`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+editor_options:
+  
+  chunk_output_type: console
+params:  
+  study_name: "ccrvb31_FAT1dc_bulkRNAseq"
+  ### directory where to put the analysis outputs
+  parent_dir: "~/../../Volumes/NCI_VB/berzofsky/ccrvb31_FAT1dc_bulkRNAseq_KCG/forMS"
+  ### where the raw counts matrix from RENEE is
+  input_dir: "~/../../Volumes/NCI_VB/berzofsky/ccrvb31_FAT1dc_bulkRNAseq_KCG/forMS/input_data"
+
+  ### where this code file is
+  code_path: "~/../../Volumes/NCI_VB/goldfarbmurenkc/github/VaccineBranch/Berzofsky/ccrvb31_FAT1dc_bulkRNAseq_KCG.Rmd"
+  #functions_path: "~/../../Volumes/NCI_VB/goldfarbmurenkc/github/VaccineBranch/general"
+  log2FC_cutoff: !r log2(2) #1.58 #0.59 #1
+  fdr_cutoff: 0.05
+  enrich_cutoff: 0.05 ### for gene concept networks
+  eval_enrichments: TRUE
+  eval_enrichmentsPlot: TRUE  
+  
+  lib_loc_to_use: "/data/goldfarbmurenkc/R/rhel8/4.3/"
+  
+  ##### also change name below if desired
+  knit: (function(inputFile, encoding) { rmarkdown::render(inputFile, encoding = encoding, output_file = file.path(dirname(inputFile), 'ccrvb31_FAT1dc_bulkRNAseq_FC2_KCG.html')) })
+---
+
+
+
+```{r setup, include=FALSE}
+
+############ can be run on biowulf called by wrapper ccrvb31_FAT1dc_bulkRNAseq_KCG.R, via shells like ccrvb31_FAT1dc_bulkRNAseq_KCG_fdrpt05_fc2.sh
+
+
+
+# more substantial setup for your document
+knitr::opts_chunk$set(echo = FALSE, 
+                      fig.width = 9, 
+                      fig.height = 9, 
+                      dev = "png", #change to pdf to make all editable
+                      dpi = 300,
+                      cache = FALSE,
+                      warning = FALSE,
+                      message = FALSE)
+#https://github.com/rstudio/DT/issues/867
+DT::datatable(
+  matrix(), extensions="Buttons",
+  options = list(dom = 'Blfrtip',
+                           buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+                           lengthMenu = list(c(10,25,50,-1),
+                                             c(10,25,50,"All")))
+)
+
+eval_enrich <- params$eval_enrichments
+eval_enrichPlot <- params$eval_enrichmentsPlot
+                       
+```
+
+```{r paths_lists, warning=FALSE, include=FALSE}
+############################################################
+# generate output directories
+############################################################
+parent_dir <- params$parent_dir
+input_dir <- params$input_dir
+
+#### generate
+outputIMAGES_dir = paste0(parent_dir,"/IMAGES")
+outputTABLES_dir = paste0(parent_dir,"/TABLES")
+outputRData_dir = paste0(parent_dir,"/RData")
+outputEnrichr_dir = paste0(parent_dir,"/TABLES/Enrichr")
+output_dirs <- c(outputIMAGES_dir, outputTABLES_dir, outputRData_dir, outputEnrichr_dir)
+
+for (curr_dir in output_dirs){
+  if(!(file.exists(file.path(curr_dir)))){
+    dir.create(file.path(curr_dir), showWarnings = TRUE)
+  }
+}
+code_path = params$code_path
+#functions_path = params$functions_path
+
+```
+
+
+```{r source_pkgs, warning=FALSE, include=FALSE}
+############################################################
+# packages & functions
+############################################################
+
+# package list
+list.of.packages=c("openxlsx","readxl", "tidyverse","cowplot", "pheatmap","dendsort","ggpubr","stringr","eulerr", "enrichR","knitr","broom","kableExtra","gtsummary",
+"gridExtra","DT","downloadthis","ggbeeswarm","ggrepel","ggplotify","flextable","officer",
+"DESeq2","RColorBrewer","colorspace","data.table","EnhancedVolcano",
+"org.Mm.eg.db","GenomicFeatures", "Rsubread","strex","pander","viridis","ggfortify","ggalluvial","janitor","enrichplot"
+#,"corrplot","factoextra","forcats","babelgene"
+)
+
+#install as needed
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) BiocManager::install(new.packages)
+
+## install l2p from git doesn't work, need to download locally, still doesn't work, but then repeated within R and worked
+# brew install wget
+# wget https://github.com/CCBR/l2p/raw/master/l2p_0.0-13.tar.gz
+# # Install as a site package 
+# R CMD INSTALL l2p_0.0-13.tar.gz
+# install.packages("https://github.com/CCBR/l2p/raw/master/l2p_0.0-3.tar.gz", repos=NULL)
+# library(l2p)
+
+# source common functions, need to have NCI_VB mounted to run this
+#source(file.path(functions_path,"CommonFunctions_KCG.R"))
+
+# Rmd functions
+#source(file.path(functions_path,'Rmd_functions_KCG.R'))
+
+# load packages
+invisible(lapply(list.of.packages, library, character.only = TRUE))
+```
+
+
+
+```{r htmltools_init, include=FALSE, eval=FALSE}
+# Init Step to make sure that the dependencies are loaded
+htmltools::tagList(datatable(cars))
+htmltools::tagList(ggplotly(ggplot()))
+```
+
+```{bash runRENEE, eval=FALSE}
+#https://github.com/CCBR/RENEE
+
+### get ineractive session on biowulf HPC
+sinteractive --mem=110g --cpus-per-task=12 --gres=lscratch:200
+
+#### load pipeliner
+module load ccbrpipeliner
+
+### run pipeline mapping to mm10_M21
+renee run --input /data/NCI_VB/rawdata/CCRVB-31/*/Sample*/*.fastq.gz --output /data/NCI_VB/berzofsky/ccrvb31_FAT1dc_bulkRNAseq_KCG/RENEE_mm10_M21_230901 --genome mm10_M21 --mode slurm
+#7370683, started at 5:17pm EST
+
+### look at outputs
+ls /data/NCI_VB/berzofsky/ccrvb31_FAT1dc_bulkRNAseq_KCG/RENEE_mm10_M21_230901/Reports/
+
+### cp raw counts out to use
+cp /data/NCI_VB/berzofsky/ccrvb31_FAT1dc_bulkRNAseq_KCG/RENEE_mm10_M21_230901/DEG_ALL/RSEM.genes.expected_count.all_samples.txt /data/NCI_VB/berzofsky/ccrvb31_FAT1dc_bulkRNAseq_KCG/forMS/input_data/RSEM.genes.expected_count.all_samples.txt
+
+cp /data/NCI_VB/berzofsky/ccrvb31_FAT1dc_bulkRNAseq_KCG/RENEE_mm10_M21_230901/DEG_ALL/RSEM.genes.TPM.all_samples.txt /data/NCI_VB/berzofsky/ccrvb31_FAT1dc_bulkRNAseq_KCG/forMS/input_data/RSEM.genes.TPM.all_samples.txt
+
+```
+
+
+FDR cutoff: `r paste0(as.double(params$fdr_cutoff))` 
+
+
+log2 FC cutoff: `r paste0("|FC| of ", round(as.double(2^as.double(params$log2FC_cutoff)), digits = 1))` 
+
+
+
+
+``` {r loadData}
+
+######### read raw RNAseq counts matrix
+RNAseq_raw_full <- fread(file.path(input_dir,paste0("RSEM.genes.expected_count.all_samples.txt")), header=T, stringsAsFactors = F,data.table=F)
+
+######### read tpm normalized RNAseq counts matrix
+RNAseq_tpm_full <- fread(file.path(input_dir,paste0("RSEM.genes.TPM.all_samples.txt")), header=T, stringsAsFactors = F,data.table=F)
+
+############## generate metadata
+metadata_df <- data.frame("sample"=colnames(RNAseq_raw_full)[-which(colnames(RNAseq_raw_full) %in% c("gene_id","GeneName"))]) %>%
+  mutate(sample_num= str_before_first(sample,"_"),
+         genotype= ifelse(grepl("WT",sample),"WT",
+                          ifelse(grepl("DHA",sample),"WT","FAT1")),
+         treatment1=str_remove_all(str_after_first(sample,"_"),"WT_"),
+         treatment= ifelse(genotype == "WT", str_before_last(treatment1, "_"),str_after_first(treatment1,"_")),
+         animal= ifelse(genotype == "WT", str_after_last(treatment1, "_"),str_before_first(treatment1,"_")),
+         treatment= ifelse(is.na(treatment),"NT",treatment),
+         animal= ifelse(is.na(animal),str_after_last(treatment1,"NT"),animal),
+         treatment1=NULL
+         )
+
+####save metadata
+saveRDS(metadata_df, file.path(input_dir,paste0("metadata.rds")))
+fwrite(metadata_df, file.path(input_dir,paste0("metadata.txt")), col.names = TRUE, row.names = FALSE)
+
+  
+#### set up df to store contrasts
+contrast_df <- data.frame(matrix(ncol=6,nrow=0))
+colnames(contrast_df) <- c("comparison_name","group1_name","group1_samples","group2_name","group2_samples","paired_or_not")  
+```
+
+
+# {.tabset}
+
+
+## Figure 5B & 5C (PCA) {.tabset}
+
+PCA using top 1000 most variant genes
+
+
+```{r PCA_setup}
+sample_nums_to_use <- c(13,14,15, 24,25,26, #D0 WT & FAT1
+                        5,6,7, 16,17,18,  #NT WT & FAT1
+                        10,11,12,  21,22,23)  #LPS_GP100 WT & FAT1
+
+name_to_use <- "FAT1 vs WT for D0, NT, LPS/gp100"
+short_name_to_use <- "FAT1vsWT_DO_NT_LPSgp100"
+
+treatment_levels <- c("D0","NT","LPS_GP100")
+geno_treat_levels <- c(paste0("FAT1_",treatment_levels),paste0("WT_",treatment_levels))
+var_for_color <- "Treatment"
+var_for_shape <- "Genotype"
+pca_shapes_to_use <- c(16,1)
+pca_colors_to_use <- c("dodgerblue2","goldenrod2","violetred2")
+
+
+##### for heatmap of most interesting PC
+pc_of_interest <- "PC3"
+num_loadings_each_dir <- 50
+ordered_samples_for_heatmap <- metadata_df$sample[which(metadata_df$sample_num %in% sample_nums_to_use)]
+
+
+
+annotation_colors=list(genotype=c(WT="grey", FAT1="black"),
+                       treatment=c(D0="dodgerblue2",
+                                   NT="goldenrod2",
+                                   GP100="orchid1",
+                                   LPS_GP100="violetred2"),
+                       dir=c(up="red",down="blue")
+)
+
+
+```
+
+### `r paste0(name_to_use)` {.tabset}
+
+
+``` {r DESeqForPCA}
+
+##### trim RNAseq to samples of interest
+samples_to_use <- metadata_df$sample[which(metadata_df$sample_num %in% sample_nums_to_use)]
+rawcounts <- RNAseq_raw_full[,c("gene_id",samples_to_use)] %>%
+  column_to_rownames("gene_id")
+
+#### setup sampleinfo 
+sampleinfo_rna <- metadata_df[which(metadata_df$sample %in% samples_to_use),] %>%
+  mutate(Genotype = factor(genotype, c("FAT1","WT")),
+         Treatment = factor(treatment, treatment_levels),
+         geno_treat = factor(paste0(Genotype,"_",Treatment),geno_treat_levels))
+        
+
+ ########## run DESeq with no design
+  dds <- DESeqDataSetFromMatrix(countData = as.matrix(round(rawcounts)),
+                                colData = sampleinfo_rna,
+                                design = ~ 1)
+  
+  dds <- DESeq(dds)
+  # if ( params$htsfilter == "Y" ){
+  #   dds <- HTSFilter::HTSFilter(dds,s.len=50, plot=TRUE)$filteredData
+  # }
+  # results <- results(dds)
+  # results_df <- as.data.frame(results)
+  # results_df %>% rownames_to_column(var="peakID") -> results_df
+  # results_df_full <- results_df
+  
+  ### many padj are NA
+  #https://bioconductor.org/packages/release/bioc/vignettes/DESeq2/inst/doc/DESeq2.html#pvaluesNA
+  #"If a row is filtered by automatic independent filtering, for having a low mean normalized count, then only the adjusted p value will be set to NA. Description and customization of independent filtering is described below"
+```
+  
+``` {r DESeqPCA, results = "asis", fig.width=7, fig.height=5}
+
+  # default for nsub is 1000, if there are less than 1000 rows this will error
+  if (nrow(dds) < 2000){
+    rld <- vst(dds,nsub=nrow(dds))
+  } else{
+    rld <- vst(dds)
+  }
+  assayrld = as.data.frame(assay(rld))
+  assayrld$row_variance = rowVars(as.matrix(assayrld))
+  assayrld = arrange(assayrld,desc(row_variance))
+  zero_variance_rows=assayrld$row_variance<1e-5
+  assayrld$row_variance = NULL
+  assayrld = assayrld[!zero_variance_rows,]
+  if (nrow(assayrld) > 1000){
+    assayrld=assayrld[1:1000,]
+  }
+  pca=prcomp(t(assayrld),scale. = T)
+  m.pc1 = round(pca$sdev[1]^2/sum(pca$sdev^2)*100,2)
+  m.pc2 = round(pca$sdev[2]^2/sum(pca$sdev^2)*100,2)
+  m.pc3 = round(pca$sdev[3]^2/sum(pca$sdev^2)*100,2)
+  m.pc4 = round(pca$sdev[4]^2/sum(pca$sdev^2)*100,2)
+  
+  
+  ### save pca object for downstream
+  saveRDS(pca, file = file.path(outputRData_dir,paste0(params$study_name,"_",short_name_to_use,"_pca.rds")))
+  
+cat('\n')
+  cat(' \n \n') ### this is the key! 
+  
+cat("#### ",paste0("Fig5B: PC1 vs PC2"),"\n")
+cat('\n')
+
+  xlab=paste0("PC1 (",m.pc1,"%)")
+  ylab=paste0("PC2 (",m.pc2,"%)")
+ggplot(data.frame(pca$x),aes(x=PC1,y=PC2,label=rownames(pca$x)))+
+    geom_point(aes(col=sampleinfo_rna[,var_for_color], 
+               shape=sampleinfo_rna[,var_for_shape],
+               size = 3), stroke = 1)+
+    scale_color_manual(var_for_color,values = pca_colors_to_use)+
+    #scale_fill_manual(var_for_color,values = treatment_colors)+
+    scale_shape_manual(var_for_shape, values = pca_shapes_to_use)+
+    xlab(xlab)+ylab(ylab)+
+    geom_text_repel(max.overlaps = 10,size=3)+
+  scale_size(guide = 'none')+ ### remove the size from legend
+  ggtitle(paste0(name_to_use))+
+    theme_light()
+
+  cat(' \n \n') ### this is the key! 
+  
+  
+  
+cat("#### ",paste0("Fig 5C: PC3 vs PC4"),"\n")
+cat('\n')
+
+    xlab=paste0("PC3 (",m.pc3,"%)")
+    ylab=paste0("PC4 (",m.pc4,"%)")
+ggplot(data.frame(pca$x),aes(x=PC3,y=PC4,label=rownames(pca$x)))+
+      geom_point(aes(col=sampleinfo_rna[,var_for_color], 
+               shape=sampleinfo_rna[,var_for_shape],
+               size = 3), stroke = 1)+
+    scale_color_manual(var_for_color,values = pca_colors_to_use)+
+    #scale_fill_manual(var_for_color,values = treatment_colors)+
+    scale_shape_manual(var_for_shape, values = pca_shapes_to_use)+
+    xlab(xlab)+ylab(ylab)+
+    geom_text_repel(max.overlaps = 10,size=3)+
+  scale_size(guide = 'none')+ ### remove the size from legend
+    ggtitle(paste0(name_to_use))+
+    theme_light()
+
+  cat(' \n \n') ### this is the key!  
+  
+ cat("#### ",paste0("loadings dataframe "),"\n")
+cat('\n')
+ 
+loadings_df <- as.data.frame(pca$rotation)[1:4] %>%
+  rownames_to_column("gene_id") %>%
+  dplyr::left_join(RNAseq_raw_full[,c("gene_id","GeneName")], by = "gene_id") %>%
+  relocate("GeneName") %>%
+  arrange(desc(PC1))
+
+loadings_df %>%
+    DT::datatable(extensions = 'Buttons',
+            options = list(dom = 'Blfrtip',
+                           buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+                           iDisplayLength = 25,
+                           lengthMenu = list(c(10,25,50,-1),
+                                             c(10,25,50,"All"))))
+
+
+  cat(' \n \n') ### this is the key!  
+
+```
+  
+
+
+
+
+
+## Figure 5D, 6DEF (FAT1 vs WT at each timepoint) {.tabset}
+
+unpaired analysis
+
+```{r DESEQ_setup1}
+comparison_name <- "D0: FAT1 vs WT"
+group1_name <- "FAT1"
+group2_name <- "WT"
+#### samples in each group
+group1 <- as.character(c(24,25,26)) #### group1 vs group2
+group2 <- as.character(c(13,14,15))
+paired_or_not <- "not"
+
+short_name_to_use <- "" ##dummy until needed
+```
+
+### 1. Figure 5D left - `r paste0(comparison_name)` {.tabset}
+
+``` {r DESeq_RNAdata}
+### add controast to contrast_df
+cur_df <- data.frame("comparison_name"=comparison_name, 
+                     "group1_name"=group1_name, 
+                     "group1_samples"=paste(group1, collapse = '_'), 
+                     "group2_name"=group2_name, 
+                     "group2_samples"=paste(group2, collapse = '_'), 
+                     "paired_or_not"=paired_or_not)
+contrast_df <- rbind(contrast_df, cur_df)
+
+##### trim RNAseq to samples of interest
+samples_to_use <- metadata_df$sample[which(metadata_df$sample_num %in% c(group1, group2))]
+RNAseq_trim <- RNAseq_raw_full[,c("gene_id",samples_to_use)] %>%
+  column_to_rownames("gene_id")
+
+#### setup sampleinfo 
+sampleinfo_rna <- metadata_df[which(metadata_df$sample %in% samples_to_use),] %>%
+  ### factorize group
+  mutate(group = factor(ifelse(sample_num %in% group1,group1_name,
+                        ifelse(sample_num %in% group2,group2_name,"unassigned"))),
+         group = relevel(group, group2_name))  ### group1 vs group2
+
+        
+
+  ########## run DESeq
+if(paired_or_not == "paired"){
+  dds_rna <- DESeqDataSetFromMatrix(countData = as.matrix(round(RNAseq_trim)),
+                                colData = sampleinfo_rna,
+                                design = ~ animal + group) #### take into account the paired nature https://support.bioconductor.org/p/84241/
+
+}else{
+  dds_rna <- DESeqDataSetFromMatrix(countData = as.matrix(round(RNAseq_trim)),
+                                colData = sampleinfo_rna,
+                                design = ~ group) 
+
+}
+  
+  dds_rna <- DESeq(dds_rna)
+
+  results_rna <- results(dds_rna)
+  results_df_rna <- as.data.frame(results_rna) %>% 
+    rownames_to_column(var="gene_id") %>%
+    mutate(sig = ifelse(padj < params$fdr_cutoff, "sig" ,"not_sig"))
+  results_df_full_rna <- results_df_rna
+  
+  ### many padj are NA
+  #https://bioconductor.org/packages/release/bioc/vignettes/DESeq2/inst/doc/DESeq2.html#pvaluesNA
+  #"If a row is filtered by automatic independent filtering, for having a low mean normalized count, then only the adjusted p value will be set to NA. Description and customization of independent filtering is described below"
+  
+  #### also print the sample info so you're sure which samples were compared
+  sampleinfo_rna %>%
+    arrange(group) %>%
+    flextable() %>%
+    theme_zebra()
+```
+
+
+#### DEG volcano {.active}
+
+log2FC > `r paste0(params$log2FC_cutoff)`
+
+`r paste0(group1_name," vs ", group2_name)`
+
+```{r RNAseq_DEG_volcano, echo=F, fig.width = 10}
+
+#### add back genename annotation
+results_df_rna2 <- results_df_rna %>%
+  dplyr::left_join(RNAseq_raw_full[,c("gene_id","GeneName")], by = "gene_id")
+  
+
+
+
+#### add new "Significant" column to RNAseq DEGs for Volcano plot
+results_df_rna2[which(results_df_rna2$padj<params$fdr_cutoff),"Significant"]='Pvalue'
+results_df_rna2[which(abs(results_df_rna2$log2FoldChange)>params$log2FC_cutoff & results_df_rna2$padj<params$fdr_cutoff),"Significant"]='DEG'
+results_df_rna2[which(abs(results_df_rna2$log2FoldChange)>params$log2FC_cutoff & results_df_rna2$padj>params$fdr_cutoff),"Significant"]='FC'
+
+### generate plot
+ggplot(results_df_rna2,aes(log2FoldChange,-log10(padj),color=Significant)) +
+  geom_point() + 
+  theme_bw()  +
+  geom_text_repel(data = . %>% 
+                    mutate(label = ifelse(Significant == "DEG" & -log10(padj) > 50 |
+                                            Significant == "DEG" & abs(log2FoldChange) > 1 |
+                                            Significant == "DEG" & log2FoldChange > 1 ,
+                                          GeneName, "")),
+                  aes(label = label), max.overlaps = 70,
+                  box.padding = 1.1,
+                  show.legend = FALSE) + #this removes the 'a' from the legend
+  geom_hline(yintercept = -log10(params$fdr_cutoff),linetype="dashed") +
+  geom_vline(xintercept = c(-params$log2FC_cutoff,params$log2FC_cutoff),linetype="dashed") +
+  #scale_x_continuous(limits = c(-15,15))+
+  scale_color_manual(values=c("red", "forestgreen", "royalblue"))+
+  ggtitle(paste0("Differential RNA Expression (",length(which(results_df_rna2$Significant == "DEG" & results_df_rna2$log2FoldChange > params$log2FC_cutoff))," sig up, ",length(which(results_df_rna2$Significant == "DEG" & results_df_rna2$log2FoldChange < (-1)*as.double(params$log2FC_cutoff)))," sig down)"))
+
+up_df <- results_df_rna2[which(results_df_rna2$padj < params$fdr_cutoff & results_df_rna2$log2FoldChange > params$log2FC_cutoff),] %>%
+  relocate(GeneName)
+
+down_df <-  results_df_rna2[which(results_df_rna2$padj < params$fdr_cutoff & results_df_rna2$log2FoldChange < (-1)*as.double(params$log2FC_cutoff)),] %>%
+  relocate(GeneName)
+
+```
+
+
+#### Detailed results {.tabset}
+
+`r dim(up_df)[1]` up , `r dim(down_df)[1]` down
+
+##### up in`r paste0(group1_name)`
+
+``` {r RNAseq_results_table_up}
+
+up_df %>%
+    DT::datatable(extensions = 'Buttons',
+            options = list(dom = 'Blfrtip',
+                           buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+                           iDisplayLength = 25,
+                           lengthMenu = list(c(10,25,50,-1),
+                                             c(10,25,50,"All"))))
+```
+
+##### down in`r paste0(group1_name)`
+
+``` {r RNAseq_results_table_down}
+down_df %>%    
+  DT::datatable(extensions = 'Buttons',
+            options = list(dom = 'Blfrtip',
+                           buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+                           iDisplayLength = 25,
+                           lengthMenu = list(c(10,25,50,-1),
+                                             c(10,25,50,"All"))))
+```
+
+
+
+``` {r saveDESeq_RNASeq}
+contrast_name <- str_replace_all(str_replace_all(str_replace_all(comparison_name," ","_"),":","_"),"/","")
+FC_cutoff_name <- str_replace_all(round(as.double(2^as.double(params$log2FC_cutoff)), digits = 1),"\\.","pt")
+fdr_cutoff_name <- str_replace_all(params$fdr_cutoff,"0\\.","pt")
+
+saveRDS(results_rna,file=file.path(outputRData_dir,paste0(params$study_name,"_RNAseq_fdr",fdr_cutoff_name,"_fc",FC_cutoff_name,"_DESeq_results_",contrast_name,".rds")))
+saveRDS(results_df_rna2,file=file.path(outputRData_dir,paste0(params$study_name,"_RNAseq_fdr",fdr_cutoff_name,"_fc",FC_cutoff_name,"_DESeq_results_df_",contrast_name,".rds")))
+write.table(results_df_rna2[which(results_df_rna2$padj < as.double(params$fdr_cutoff) & abs(results_df_rna2$log2FoldChange) > as.double(params$log2FC_cutoff)),], file=file.path(outputTABLES_dir,paste0(params$study_name,"_RNAseq_fdr",fdr_cutoff_name,"_fc",FC_cutoff_name,"_DESeq_results_df_",contrast_name,".txt")),quote=FALSE,sep="\t",row.names = FALSE,col.names = TRUE)
+```
+
+#### Enrichments {.tabset}
+
+``` {r enrichment_setup}
+up_enrich <- data.frame("gene"=up_df$GeneName, "comparison"=rep(paste0("up_in",group1_name),length(up_df$GeneName)))
+down_enrich <- data.frame("gene"=down_df$GeneName, "comparison"=rep(paste0("down_in",group1_name),length(down_df$GeneName)))
+genes <- rbind(up_enrich,down_enrich)
+
+write.table(genes,quote=F,sep="\t",row.names=F,file=file.path(outputEnrichr_dir,"genes.txt"))
+
+
+##Define arguments for the Enrichr function, most stay the same except for prefix
+#The name of the object with genes to enrich
+#****Prefix for output file name***** needed for Enrichr
+dataset<- paste0(params$study_name,"_RNAseq_fdr",fdr_cutoff_name,"_fc",FC_cutoff_name,"_DESeq_results_df_",contrast_name)
+write.table(genes,quote=F,sep="\t",row.names=F,file=file.path(outputEnrichr_dir,paste0(dataset,"genes.txt")))
+
+```
+
+``` {r runEnrichments, include = FALSE, eval = eval_enrich}
+if(dim(genes)[1] > 0){
+  DEG_table<-genes
+ngenes = NULL
+
+  #Enrichr libraries to query ***UPDATED Aug 2023****
+  enrichr.libraries=c("GO_Biological_Process_2023", "GO_Cellular_Component_2023", "GO_Molecular_Function_2023", "KEGG_2021_Human","KEGG_2019_Mouse", "MSigDB_Hallmark_2020",
+                      "WikiPathway_2021_Human","WikiPathways_2019_Mouse", "Azimuth_Cell_Types_2021","Reactome_2022","Reactome_2016","BioPlanet_2019")
+#Minimum number of overlapping genes
+minOverlap=3
+#FDR cutoff
+minAdjPval=0.2
+
+
+##Do enrichments - this function is having trouble for when the second tab has no terms (10/10/23)
+# doEnrichOneAtATime(DEG_table=DEG_table,dataset=dataset,ngenes=ngenes,Enrichr_dir=file.path(outputEnrichr_dir),
+#                    enrichr.libraries=enrichr.libraries,minOverlap=3,minAdjPval=0.2)
+############ done ENRICHR - results written to xlsx file
+
+### bones of the doEnrichOneAtATime function
+
+masterList<-list()
+	for(i in 1:length(unique(DEG_table$comparison))){
+	  
+	  unique(DEG_table$comparison)[i]
+	  
+		#Set current set of genes
+		currData<-as.character(DEG_table$gene[which(DEG_table$comparison == unique(DEG_table$comparison)[i])])
+		#Cull genes if desired
+		if(!is.null(ngenes)){
+			currData<-currData[1:ngenes]
+		}
+		
+
+		
+		#Run enrichr
+		enriched<-enrichr(currData,enrichr.libraries)
+		#Place results from different libraries into a single table
+
+				#### need these lines to get the new enriched to be seen, overwrite the old enriched
+ # 		cat(paste0("##### enriched "),"\n")
+ #     cat("\n")
+  #    sapply(enriched, dim)
+      # cat("\n")
+      # cat(' \n \n') ### this is the key!
+
+      print(sapply(enriched, dim))
+     # 
+      cat("\n")
+      cat(' \n \n') ### this is the key!
+
+ 	#	enriched
+
+#  		cat("\n")
+#     cat(' \n \n') ### this is the key!
+# 
+  #		print(enriched)
+# 		cat("\n")
+#      cat(' \n \n') ### this is the key!
+#  
+
+		
+		enriched_tab<-data.frame()
+		
+
+		for(j in 1:length(enriched)){
+			if(nrow(enriched[[j]] > 0)){
+				enriched_tab<-rbind(enriched_tab,cbind("Gene.Set"=names(enriched)[j],enriched[[j]]))
+			}
+		}
+		
+		### try removing enriched here so need to re-make above
+	#	rm(list=c("enriched"))
+		
+		#Prepare table for export
+		if(nrow(enriched_tab) > 0){
+			enriched_tab<-enriched_tab[,-c(6:8)] #weed out unwanted columns
+			enriched_tab$Overlap<-gsub("/","_",enriched_tab$Overlap) #Separate slashes with underscores
+			enriched_tab$Genes<-gsub(";",", ",enriched_tab$Genes) #Separate genes with commas
+			enriched_tab$Genes<-sapply(strsplit(enriched_tab$Genes,", "),function(x)paste(sort(x),collapse=", ")) #sort genes alphabetically
+			enriched_tab<-enriched_tab[order(enriched_tab$Adjusted.P.value),] #sort by padj
+			enriched_tab<-enriched_tab[which(enriched_tab$Adjusted.P.value < minAdjPval),] #set min padj
+			enriched_tab<-enriched_tab[which(sapply(strsplit(enriched_tab$Genes,","), #set min overlap
+				function(x)length(x)) >= minOverlap),]
+		}
+		
+		
+
+		#If there are zero columns, then add in empty columns
+		# if(ncol(enriched_tab) == 0){
+		# 	enriched_tab<-data.frame(matrix(ncol=7,nrow=0))
+		# 	colnames(enriched_tab)<-c("Gene.Set","Term","Overlap","P.value","Adjusted.P.value","Combined.Score","Genes")
+		# }
+		#Add table to master list
+		masterList[[i]]<-enriched_tab
+		names(masterList)[i]<-as.character(unique(DEG_table$comparison)[i])
+
+
+
+		
+	}
+
+openxlsx::write.xlsx(masterList, file=file.path(outputEnrichr_dir,paste0(dataset,"_Enrichr.output.xlsx")))
+
+}
+```
+
+
+
+``` {r plotGenesEnrichTables_withNetworks, results = 'asis', eval = eval_enrichPlot, fig.height = 11}
+if(dim(genes)[1] > 0){
+  # ### open file where each tab is an element of list
+  #list_of_enrch <- readExcelTabs(file.path(outputEnrichr_dir,paste0(dataset,"_Enrichr.output.xlsx")))
+  ### try using masterList list generated by the doEnrichOneAtATime function to test if issue is in the xlsx generation 
+  list_of_enrch <- masterList
+        mahe_trim_uni_adj_list <- list()
+  ###### then gene lists 
+  for (comp in names(list_of_enrch)){
+    
+    
+    cat(paste0("##### ", comp, " table"),"\n")
+    cat("\n")
+    
+    #### important to only  print if there are enrichments for this comp (otherwise will print previous enrichment tab)
+    
+    if(dim(list_of_enrch[[comp]])[1] > 0){
+      cat(paste0(length(which(list_of_enrch[[comp]]$Adjusted.P.value < as.double(params$enrich_cutoff)))," total terms with fdr < ",paste0(params$enrich_cutoff)),"\n")
+      cat("\n")
+      
+      
+      
+      enrich_df_to_print <- list_of_enrch[[comp]] %>%
+        DT::datatable(extensions = 'Buttons',
+                      options = list(dom = 'Blfrtip',
+                                     buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+                                     iDisplayLength = 25,
+                                     lengthMenu = list(c(10,25,50,-1),
+                                                       c(10,25,50,"All"))))
+      
+      print(htmltools::tagList(enrich_df_to_print))
+      
+      cat("\n")
+      cat(' \n \n') ### this is the key!
+      
+
+      ############ also gene concept networks only for the fat1 vs wt
+      if(comparison_name %in% c("D0: FAT1 vs WT","D7 immature NT: FAT1 vs WT") |
+         short_name_to_use %in% c("FAT1vsWTvsDHA_LPSgp100","FAT1vsWT_DO_NT_LPSgp100")){
+        
+        cat(paste0("##### ", comp, " network"),"\n")
+        cat("\n")
+        
+        
+        cat(paste0(length(which(list_of_enrch[[comp]]$Adjusted.P.value < as.double(params$enrich_cutoff)))," total terms with fdr < ",paste0(params$enrich_cutoff)),"\n")
+        cat("\n")
+        
+        cat(paste0(" ", " black nodes & colored edges represent enrichment terms"),"\n")
+        cat("\n")
+        
+        
+        cat(paste0(" ", " grey nodes represent genes"),"\n")
+        cat("\n")    
+        
+        
+        if(length(which(list_of_enrch[[comp]]$Adjusted.P.value < as.double(params$enrich_cutoff))) > 0){
+          ### isolate list of interest from the includsive enrichments
+          mahe <- list_of_enrch[[comp]]
+          
+          ### trim to sig padj
+          mahe_trim <- mahe[which(mahe$Adjusted.P.value < as.double(params$enrich_cutoff)),]
+          
+          ### consolidate terms with same genes (often the same or related term)
+          mahe_trim_uni <- data.frame("Genes"=unique(mahe_trim$Genes)) %>%
+            mutate(Terms = "NA")
+          for(G in mahe_trim_uni$Genes){
+            mahe_trim_uni$Terms[which(mahe_trim_uni$Genes == G)] <- paste(mahe_trim$Term[which(mahe_trim$Genes == G)], collapse = ' ')
+            mahe_trim_uni$Terms_simp[which(mahe_trim_uni$Genes == G)] <- paste(unique(tolower(unlist(strsplit(mahe_trim_uni$Terms[which(mahe_trim_uni$Genes == G)], split=" ")))), collapse = ' ')
+          }
+          ### remove homo sapiens and r-hsa xxx and (go:)
+          mahe_trim_uni <- mahe_trim_uni %>%
+            mutate(Terms_simp2 = ifelse(grepl("r-hsa", Terms_simp ),str_before_first(Terms_simp, " r-hsa" ),Terms_simp),
+                   Terms_simp3 = str_to_title(ifelse(grepl("\\(go:", Terms_simp2 ),str_before_first(Terms_simp2, " \\(go:" ),Terms_simp2)))
+          
+          ### make list
+          mahe_list <- list()
+          for(ts in unique(mahe_trim_uni$Terms_simp3)){
+            curr_tib <- as_tibble(mahe_trim_uni$Genes[which(mahe_trim_uni$Terms_simp3 == ts)]) %>%
+              separate_rows(value, sep = ",") %>%
+              mutate(value = str_remove_all(value, " "))
+            mahe_list[[ts]] <- curr_tib$value
+            
+          }
+          
+          
+          mahe_trim_uni_adj_list[[comp]] <- mahe_trim_uni
+          
+          p1 <- 
+            cnetplot(mahe_list, showCategory = names(mahe_list), color.params = list(edge =TRUE, 
+                                                                                     #category = c("red","orange","yellow","green3","cyan","blue","purple","hotpink","brown")
+                                                                                     category = "black"
+            ), node_label = "gene", layout = "kk")
+          
+          plot(p1 + theme(legend.position="bottom", legend.direction = "vertical"))
+          cat("\n")
+          cat(' \n \n') ### this is the key!
+        }else{
+          
+          cat("\n")
+          cat(' \n \n') ### this is the key!
+          
+        }
+        
+      }else{
+        
+        cat("\n")
+        cat(' \n \n') ### this is the key!
+        
+      }
+      
+      
+      #if(comparison_name %in% c("D0: FAT1 vs WT","D7 immature NT: FAT1 vs WT","D7 mature DCs LPSgp100: FAT1 vs WT")){
+      if(comparison_name %in% c("D7 mature DCs LPSgp100: FAT1 vs WT") |
+         short_name_to_use %in% c("FAT1vsWTvsDHA_LPSgp100","FAT1vsWT_DO_NT_LPSgp100")){
+        
+        enrich_cutoff_for_mature <- 0.1
+        
+        cat(paste0("##### ", comp, " network, raw-p enrichments"),"\n")
+        cat("\n")
+        
+        
+        cat(paste0(length(which(list_of_enrch[[comp]]$P.value < as.double(enrich_cutoff_for_mature)))," total terms with raw p < ", paste0(enrich_cutoff_for_mature)),"\n")
+        cat("\n")
+        
+        cat(paste0(" ", " black nodes & colored edges represent enrichment terms"),"\n")
+        cat("\n")
+        
+        
+        cat(paste0(" ", " grey nodes represent genes"),"\n")
+        cat("\n")    
+        
+        
+        if(length(which(list_of_enrch[[comp]]$P.value < as.double(enrich_cutoff_for_mature))) > 0){
+          ### isolate list of interest from the includsive enrichments
+          mahe <- list_of_enrch[[comp]]
+          
+          ### trim to sig padj
+          mahe_trim <- mahe[which(mahe$P.value < as.double(enrich_cutoff_for_mature)),]
+          
+          ### consolidate terms with same genes (often the same or related term)
+          mahe_trim_uni <- data.frame("Genes"=unique(mahe_trim$Genes)) %>%
+            mutate(Terms = "NA")
+          for(G in mahe_trim_uni$Genes){
+            mahe_trim_uni$Terms[which(mahe_trim_uni$Genes == G)] <- paste(mahe_trim$Term[which(mahe_trim$Genes == G)], collapse = ' ')
+            mahe_trim_uni$Terms_simp[which(mahe_trim_uni$Genes == G)] <- paste(unique(tolower(unlist(strsplit(mahe_trim_uni$Terms[which(mahe_trim_uni$Genes == G)], split=" ")))), collapse = ' ')
+          }
+          ### remove homo sapiens and r-hsa xxx and (go:)
+          mahe_trim_uni <- mahe_trim_uni %>%
+            mutate(Terms_simp2 = ifelse(grepl("r-hsa", Terms_simp ),str_before_first(Terms_simp, " r-hsa" ),Terms_simp),
+                   Terms_simp3 = str_to_title(ifelse(grepl("\\(go:", Terms_simp2 ),str_before_first(Terms_simp2, " \\(go:" ),Terms_simp2)))
+          
+          ### make list
+          mahe_list <- list()
+          for(ts in unique(mahe_trim_uni$Terms_simp3)){
+            curr_tib <- as_tibble(mahe_trim_uni$Genes[which(mahe_trim_uni$Terms_simp3 == ts)]) %>%
+              separate_rows(value, sep = ",") %>%
+              mutate(value = str_remove_all(value, " "))
+            mahe_list[[ts]] <- curr_tib$value
+            
+          }
+          
+          
+          p1 <- 
+            cnetplot(mahe_list, showCategory = names(mahe_list), color.params = list(edge =TRUE, 
+                                                                                     #category = c("red","orange","yellow","green3","cyan","blue","purple","hotpink","brown")
+                                                                                     category = "black"
+            ), node_label = "gene", layout = "kk")
+          
+          plot(p1 + theme(legend.position="bottom", legend.direction = "vertical"))
+          cat("\n")
+          cat(' \n \n') ### this is the key!
+        }else{
+          
+          cat("\n")
+          cat(' \n \n') ### this is the key!
+          
+        }
+        
+      }else{
+        
+        cat("\n")
+        cat(' \n \n') ### this is the key!
+        
+      }
+      
+    }else{
+      
+      
+      cat(paste0("NONE"),"\n")
+      cat("\n")
+      
+    }
+    
+    cat("\n")
+    cat(' \n \n') ### this is the key!
+    
+    
+  }
+  
+  cat("\n")
+  cat(' \n \n') ### this is the key!
+  
+}
+```
+
+
+
+
+
+
+
+```{r DESEQ_setup2}
+comparison_name <- "D7 immature NT: FAT1 vs WT"
+group1_name <- "FAT1"
+group2_name <- "WT"
+#### samples in each group
+group1 <- as.character(c(16,17,18)) #### group1 vs group2
+group2 <- as.character(c(5,6,7))
+paired_or_not <- "not"
+```
+
+### 2. Figure 5D middle - `r paste0(comparison_name)` {.tabset}
+
+``` {r DESeq_RNAdata2, ref.label=c('DESeq_RNAdata')}
+```
+
+
+#### DEG volcano {.active}
+
+log2FC > `r paste0(params$log2FC_cutoff)`
+
+`r paste0(group1_name," vs ", group2_name)`
+
+
+```{r RNAseq_DEG_volcano2, ref.label=c('RNAseq_DEG_volcano'), echo=F, fig.width = 10}
+```
+
+
+#### Detailed results {.tabset}
+
+`r dim(up_df)[1]` up , `r dim(down_df)[1]` down
+
+##### up in`r paste0(group1_name)`
+
+``` {r RNAseq_results_table_up2, ref.label=c('RNAseq_results_table_up')}
+```
+
+##### down in`r paste0(group1_name)`
+
+``` {r RNAseq_results_table_down2, ref.label=c('RNAseq_results_table_down')}
+```
+
+``` {r saveDESeq_RNASeq2, ref.label=c('saveDESeq_RNASeq')}
+```
+
+#### Enrichments {.tabset}
+
+``` {r enrichment_setup2, ref.label=c('enrichment_setup')}
+```
+
+``` {r runEnrichments2, ref.label=c('runEnrichments'), include = FALSE, eval = eval_enrich}
+```
+
+``` {r plotGenesEnrichTables2, ref.label=c('plotGenesEnrichTables_withNetworks'), results = 'asis', eval = eval_enrichPlot, fig.height = 11}
+```
+
+
+
+
+
+
+
+
+
+
+```{r DESEQ_setup3}
+comparison_name <- "D7 mature DCs LPSgp100: FAT1 vs WT"
+group1_name <- "FAT1"
+group2_name <- "WT"
+#### samples in each group
+group1 <- as.character(c(21,22,23)) #### group1 vs group2
+group2 <- as.character(c(10,11,12))
+paired_or_not <- "not"
+```
+
+
+
+### 3. Figure 5D right - `r paste0(comparison_name)` {.tabset}
+
+``` {r DESeq_RNAdata3, ref.label=c('DESeq_RNAdata')}
+```
+
+
+#### DEG volcano {.active}
+
+log2FC > `r paste0(params$log2FC_cutoff)`
+
+`r paste0(group1_name," vs ", group2_name)`
+
+
+```{r RNAseq_DEG_volcano3, ref.label=c('RNAseq_DEG_volcano'), echo=F, fig.width = 10}
+```
+
+
+#### Detailed results {.tabset}
+
+`r dim(up_df)[1]` up , `r dim(down_df)[1]` down
+
+##### up in`r paste0(group1_name)`
+
+``` {r RNAseq_results_table_up3, ref.label=c('RNAseq_results_table_up')}
+```
+
+##### down in`r paste0(group1_name)`
+
+``` {r RNAseq_results_table_down3, ref.label=c('RNAseq_results_table_down')}
+```
+
+``` {r saveDESeq_RNASeq3, ref.label=c('saveDESeq_RNASeq')}
+```
+
+#### Enrichments {.tabset}
+
+``` {r enrichment_setup3, ref.label=c('enrichment_setup')}
+```
+
+``` {r runEnrichments3, ref.label=c('runEnrichments'), include = FALSE, eval = eval_enrich}
+```
+
+``` {r plotGenesEnrichTables3, ref.label=c('plotGenesEnrichTables_withNetworks'), results = 'asis', eval = eval_enrichPlot, fig.height = 11}
+```
+
+
+
+
+
+
+
+
+## Figure 6ABC (FAT1 vs WT, compare timepoints) {.tabset}
+ 
+```{r combo_heatmap_setup, eval = TRUE}
+
+comparison_name1 <- "D7 mature DCs LPSgp100: FAT1 vs WT"
+comparison_name2 <- "D7 immature NT: FAT1 vs WT"
+comparison_name3 <- "D0: FAT1 vs WT"
+
+
+
+combo_name_to_use <- c("D0, NT, LPS_GP100: FAT1 vs WT")
+
+#### euler fills
+colors_for_euler <- c("dodgerblue","dodgerblue4","gold1","gold4","violetred1","violetred4")
+
+#### these lines don't change, but need to be executed ######
+contrast_name1 <- str_replace_all(str_replace_all(str_replace_all(comparison_name1," ","_"),":","_"),"/","")
+contrast_name2<- str_replace_all(str_replace_all(str_replace_all(comparison_name2," ","_"),":","_"),"/","")
+contrast_name3<- str_replace_all(str_replace_all(str_replace_all(comparison_name3," ","_"),":","_"),"/","")
+#############################################################
+
+#### annotation for heatmap
+####### set annotation colors  
+  annotation_colors=list(genotype=c(WT="grey", FAT1="black"),
+                         treatment=c(D0="dodgerblue2",
+                                     NT="goldenrod2",
+                                     GP100="orchid1",
+                                     LPS_GP100="violetred2"),
+                         contrast_dir=c(all_up="purple",
+                                        all_down="purple4",
+                                        upup1="palegreen",
+                                        downdown1="palegreen4",
+                                        upup2="tan1",
+                                        downdown2="tan3",
+                                        up1="dodgerblue",
+                                        down1="dodgerblue4",
+                                        up2="gold1",
+                                        down2="gold4", 
+                                        up3="violetred1",
+                                        down3="violetred4",
+                                        downup="lightpink")
+                         )
+  names(annotation_colors$contrast_dir) <- c("all_up",
+    "all_down",
+    paste0(contrast_name3,"_upand",contrast_name2,"_up"),
+    paste0(contrast_name3,"_downand",contrast_name2,"_down"),
+    paste0(contrast_name2,"_upand",contrast_name1,"_up"),
+    paste0(contrast_name2,"_downand",contrast_name1,"_down"),
+    paste0(contrast_name3,"_up"),
+    paste0(contrast_name3,"_down"),
+    paste0(contrast_name2,"_up"),
+    paste0(contrast_name2,"_down"),
+    paste0(contrast_name1,"_up"),
+    paste0(contrast_name1,"_down"),
+    paste0(contrast_name3,"_downand",contrast_name1,"_up"))
+  
+    
+  ##### which group's column should be sorted for the mean expression
+  helper_df_order <- c("FAT1_LPS_GP100","WT_LPS_GP100",
+                                        "FAT1_NT","WT_NT",
+                                        "FAT1_LPS_GP100","WT_LPS_GP100",
+                                        "FAT1_D0","WT_D0",
+                                        "FAT1_NT","WT_NT",
+                                        "FAT1_LPS_GP100","WT_LPS_GP100",
+                                        "FAT1_LPS_GP100")
+                         
+
+```
+ 
+### Figure 6A: Euler {.tabset}
+ 
+``` {r compare_combination, results = 'asis', fig.height = 14, fig.width = 13, eval = TRUE}
+
+#### read in degs lists ****NOT TRIMMED FOR PADJ*****
+degs_list<-list()
+degs_list[[paste0(contrast_name1)]] <- readRDS(file=file.path(outputRData_dir,paste0(params$study_name,"_RNAseq_fdr",fdr_cutoff_name,"_fc",FC_cutoff_name,"_DESeq_results_df_",contrast_name1,".rds")))
+
+degs_list[[paste0(contrast_name2)]] <- readRDS(file=file.path(outputRData_dir,paste0(params$study_name,"_RNAseq_fdr",fdr_cutoff_name,"_fc",FC_cutoff_name,"_DESeq_results_df_",contrast_name2,".rds")))
+
+degs_list[[paste0(contrast_name3)]] <- readRDS(file=file.path(outputRData_dir,paste0(params$study_name,"_RNAseq_fdr",fdr_cutoff_name,"_fc",FC_cutoff_name,"_DESeq_results_df_",contrast_name3,".rds")))
+
+
+###### output has a gene_id (unique) and GeneName
+
+
+######## euler
+
+  cat("#### ",paste0("Plot"),"\n")
+  cat("\n")
+
+### build the list
+   curr_euler <- list()
+    for (con in c(contrast_name3,contrast_name2,contrast_name1)){
+      curr_df <- degs_list[[con]] %>%
+        mutate(GeneName_id= paste0(GeneName,"_",gene_id))
+      curr_euler[[paste0(con,"_up")]] <- unique(curr_df$GeneName_id[which(curr_df$padj < params$fdr_cutoff & curr_df$log2FoldChange > params$log2FC_cutoff)])
+      curr_euler[[paste0(con,"_down")]] <- unique(curr_df$GeneName_id[which(curr_df$padj < params$fdr_cutoff & curr_df$log2FoldChange < (-1)*as.double(params$log2FC_cutoff))])
+    }
+   
+     ### plot
+  p_euler<-plot(euler(curr_euler, shape= "ellipse"), quantities = TRUE, fills = colors_for_euler, edges = FALSE, legend = list(side = "top"))
+  
+  
+  plot(p_euler)
+  
+  cat("\n")
+  cat(' \n \n') ### this is the key!
+  
+  ### generate summary table
+      
+  summ_df <- data.frame("direction"=c("up","down"))
+  for (contrast in c(contrast_name3,contrast_name2,contrast_name1)){
+    curr_df <- data.frame("direction"=c("up","down")) %>%
+      mutate(tp = c(length(curr_euler[[paste0(contrast, "_up")]]),length(curr_euler[[paste0(contrast, "_down")]])))
+    colnames(curr_df) <- c("direction",contrast)
+    summ_df <- summ_df %>%
+      dplyr::left_join(curr_df, by = "direction")
+    
+  }
+  
+  summ_df %>%
+    flextable() %>%
+    theme_zebra()
+  
+   cat("\n")
+  cat(' \n \n') ### this is the key!
+  
+  
+  #### generate dataframe from euler list
+  euler_up_df <- setNames(data.frame(matrix(ncol = 2, nrow = 0)), c("comparison", "gene")) #empty dataframe
+  for (l in 1:length(names(curr_euler))){
+    curr_df <- data.frame("comparison"=rep(names(curr_euler)[l],length(curr_euler[[l]])),
+                          "gene"=curr_euler[[l]])
+    euler_up_df <- rbind(euler_up_df, curr_df)
+  }
+  
+  
+  
+  ### generate condense df to get overlaps
+  
+  euler_up_df_condensed <-data.frame("gene" = unique(euler_up_df$gene)) 
+  for (curr_name in unique(euler_up_df$comparison)){
+    euler_up_df_condensed <- euler_up_df_condensed %>%
+      dplyr::left_join(euler_up_df[which(euler_up_df$comparison == curr_name),], by = "gene") %>%
+      unite("combined_Overlap", starts_with("comparison"), na.rm = TRUE, remove = FALSE, sep = "and") 
+    
+  }
+  
+  cat("\n")
+  cat(' \n \n') ### this is the key!
+  
+  #### only do the following if there are any euler sectors
+  if(length(euler_up_df_condensed$combined_Overlap) > 0){
+    
+ 
+    sum_tab <- as.data.frame(table(euler_up_df_condensed$combined_Overlap)) %>%
+      dplyr::rename(combined_Overlap=Var1, Num_peaks=Freq) %>%
+      arrange(desc(combined_Overlap))
+    
+       #### flextable doesn't like to print fromwithin if() or for()
+    panderOptions('knitr.auto.asis', FALSE) #https://stackoverflow.com/questions/31626419/in-knitr-no-output-from-pander-in-for-loop
+    pander(sum_tab,style="rmarkdown") 
+ 
+    cat("\n")
+    cat(' \n \n') ### this is the key!
+    
+    
+    
+    
+    
+    cat("#### ",paste0("Which DEGs per euler overlap sector"),"\n")
+    cat("\n")
+    
+    #cat(knitr::knit_print( # https://github.com/rstudio/DT/issues/67
+    to_print <- euler_up_df_condensed %>%
+      #### remove the extra comparison columns
+      dplyr::select(-contains("comparison")) %>%
+      #### sort
+      arrange(desc(combined_Overlap),gene) %>%
+      DT::datatable(extensions = 'Buttons',
+                    options = list(dom = 'Blfrtip',
+                                   buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+                                   iDisplayLength = 25,
+                                   lengthMenu = list(c(10,25,50,-1),
+                                                     c(10,25,50,"All"))))
+    
+    #) , height = "100%", width = "100%")
+    print(htmltools::tagList(to_print))
+    
+    
+    
+    cat("\n")
+    cat(' \n \n') ### this is the key!
+}
+ 
+```
+
+
+``` {r compare_combination_heatmap, results = 'asis', fig.height = 17, fig.width = 13, eval = TRUE}
+
+##### only include this for comparisons with not that many shared DEGs
+     cat("#### ",paste0("Figure 6B: Heatmap {.tabset}"),"\n")
+  cat("\n")
+
+### add log2FC
+updown_genes_df <- euler_up_df_condensed[,c("gene","combined_Overlap")] %>%
+  dplyr::rename(GeneName_id=gene) 
+
+ ### add in DEGs info
+for(con in c(contrast_name3,contrast_name2,contrast_name1)){
+  curr_degs_df <- degs_list[[con]] %>%
+        dplyr::mutate(GeneName_id= paste0(GeneName,"_",gene_id)) 
+  updown_genes_df <- dplyr::left_join(updown_genes_df, curr_degs_df[,c("GeneName","GeneName_id","log2FoldChange","padj")], by = "GeneName_id") 
+  
+}
+
+ 
+
+
+### factorize combined_Overlap
+updown_genes_df_combo <- updown_genes_df %>%
+  ### make simpler names
+  dplyr::mutate(combOver = ifelse(combined_Overlap == "D0__FAT1_vs_WT_upandD7_immature_NT__FAT1_vs_WT_upandD7_mature_DCs_LPSgp100__FAT1_vs_WT_up",
+                                  "all_up",
+                                  ifelse(combined_Overlap == "D0__FAT1_vs_WT_downandD7_immature_NT__FAT1_vs_WT_downandD7_mature_DCs_LPSgp100__FAT1_vs_WT_down",
+                                         "all_down",
+                                         combined_Overlap)),
+         combOver_f =
+           factor(combOver, names(annotation_colors$contrast_dir)))
+
+  
+  tmp <- RNAseq_tpm_full %>%
+    mutate(GeneName_id = paste0(GeneName, "_", gene_id),
+           GeneName = NULL,
+           gene_id = NULL) %>%
+    column_to_rownames("GeneName_id")
+  
+  tmp_trim <- tmp[updown_genes_df_combo$GeneName_id, ]
+  
+  ### ordered annotation for rows = genes
+  annotation_row <- updown_genes_df_combo[,c("GeneName_id","combOver_f")] %>%
+    arrange(combOver_f) %>%
+    dplyr::rename(contrast_dir=combOver_f) %>%
+    column_to_rownames("GeneName_id")
+  
+  ### ordered annotation for columns
+  # samples_to_use <- c(13,14,15, 24,25,26, #D0 WT & FAT1
+  #                       5,6,7, 16,17,18,  #NT WT & FAT1
+  #                       10,11,12,  21,22,23)  #LPS_GP100 WT & FAT1
+  samples_to_use <- unique(c(str_split_1(contrast_df$group2_samples[which(contrast_df$comparison_name == comparison_name3)],"_"),
+                      str_split_1(contrast_df$group1_samples[which(contrast_df$comparison_name == comparison_name3)],"_"),
+                      str_split_1(contrast_df$group2_samples[which(contrast_df$comparison_name == comparison_name2)],"_"),
+                      str_split_1(contrast_df$group1_samples[which(contrast_df$comparison_name == comparison_name2)],"_"),
+                      str_split_1(contrast_df$group2_samples[which(contrast_df$comparison_name == comparison_name1)],"_"),
+                      str_split_1(contrast_df$group1_samples[which(contrast_df$comparison_name == comparison_name1)],"_")
+))
+  annotation_col <- metadata_df[which(metadata_df$sample_num %in% samples_to_use),] %>%
+    mutate(sample_num = factor(sample_num, c(samples_to_use))) %>%
+    arrange(sample_num) %>%
+    mutate(sample_num = NULL,
+           animal = NULL) %>%
+    column_to_rownames("sample")
+    
+  ######## set colors, breakscale
+  mycols = colorRampPalette(c("blue4","white","red4"))(1000)
+  #mycols = rev(colorRampPalette(brewer.pal(n=11, name = "RdYlBu"))(1000))
+  range = 2
+  breakscale <- c(-1*range,seq(-.9*range,.9*range, length.out=length(mycols)-1),1*range)
+  
+ # mycols = colorRampPalette(c("white","red4"))(1000)
+ #  breakscale <- c(0,seq(0.1,99, length.out=length(mycols)-1),100)
+  
+  gaps_df_col1 <- annotation_col %>%
+    mutate(gt = paste0(genotype,"_",treatment))
+  gaps_df_col1$gt = factor(gaps_df_col1$gt, unique(gaps_df_col1$gt))
+
+  
+  gaps_df_col <- data.frame(table(gaps_df_col1$gt)) %>%
+    mutate(cumsum = cumsum(Freq))                      
+
+  gaps_df_row <- data.frame(table(annotation_row$contrast_dir)) %>%
+    mutate(cumsum = cumsum(Freq))                      
+                        
+# 
+#       cat("##### ",paste0("alphabetical"),"\n")
+#   cat("\n")
+#   
+# 
+#     hc <-
+#     pheatmap(tmp_trim[rownames(annotation_row),rownames(annotation_col)],
+#              scale="row", na_col = "papayawhip",
+#              cluster_cols=FALSE, cluster_rows = FALSE,
+#              fontsize_row = 5, cellheight = 5,
+#              gaps_col = gaps_df_col$cumsum,
+#              gaps_row = gaps_df_row$cumsum,             
+#              col=mycols, breaks=breakscale, clustering_method="ward.D2",
+#              annotation_col = annotation_col, 
+#              annotation_row = annotation_row,
+#              annotation_colors = annotation_colors)
+# 
+#   
+#   
+#   
+# 
+#    cat("\n")
+#   cat(' \n \n') ### this is the key!
+
+
+  #      cat("##### ",paste0("by mean expression"),"\n")
+  # cat("\n")
+
+  tmp_trim2 <- tmp_trim[rownames(annotation_row),rownames(annotation_col)] %>%
+    ## make longer
+    rownames_to_column("GeneName_id") %>%
+    pivot_longer(cols = rownames(annotation_col), names_to = "sample", values_to = "tpm") %>%
+    ## add annotation
+    dplyr::left_join((annotation_col %>% rownames_to_column("sample")), by="sample") %>%
+    ## get mean
+    group_by(genotype, treatment, GeneName_id) %>%
+    summarise(mean_tpm = mean(tpm)) %>%
+    ## now add contrast_dir
+    dplyr::left_join((annotation_row %>% rownames_to_column("GeneName_id")), by="GeneName_id") %>%
+    ## prep to trim to only mean of interest for sorting
+    mutate(gt = factor(paste0(genotype,"_",treatment), levels(gaps_df_col1$gt)))
+
+  helper_df <- data.frame("contrast_dir"=levels(annotation_row$contrast_dir),
+                          "gt_to_use"=helper_df_order)
+
+  ann_with_mean <- data.frame()
+
+  for(i in 1:nrow(helper_df)){
+    curr_df <- tmp_trim2[which(tmp_trim2$contrast_dir == helper_df$contrast_dir[i] & tmp_trim2$gt == helper_df$gt_to_use[i]),]
+    ann_with_mean <- rbind(ann_with_mean, curr_df)
+  }
+
+
+  annotation_row2 <-  ann_with_mean[,c("contrast_dir","mean_tpm","GeneName_id")] %>%
+    group_by(contrast_dir) %>%
+    arrange(desc(mean_tpm), .by_group = TRUE) %>%
+    column_to_rownames("GeneName_id") %>%
+    mutate(mean_tpm = NULL)
+
+
+
+    hc <-
+    pheatmap(tmp_trim[rownames(annotation_row2),rownames(annotation_col)],
+             scale="row", na_col = "papayawhip",
+             cluster_cols=FALSE, cluster_rows = FALSE,
+             fontsize_row = 5, cellheight = 5,
+             gaps_col = gaps_df_col$cumsum,
+             gaps_row = gaps_df_row$cumsum,
+             col=mycols, breaks=breakscale, clustering_method="ward.D2",
+             annotation_col = annotation_col,
+             annotation_row = annotation_row2,
+             annotation_colors = annotation_colors)
+
+
+
+
+
+
+
+
+ 
+   cat("\n")
+  cat(' \n \n') ### this is the key!
+  
+
+  
+```
+
+
+
+
+#### Figure 6C: Alluvial {.tabset}
+
+```{r alluvial_3groupCombo, fig.height=15, fig.width=20}
+
+### combine DEGs in long format
+degs_df_combo <- data.frame()
+for(con in c(contrast_name3,contrast_name2,contrast_name1)){
+  curr_degs_df <- degs_list[[con]][which(degs_list[[con]]$Significant == "DEG"),] %>% ### trim for sig by padj and log2FC
+        mutate(GeneName_id= paste0(GeneName,"_",gene_id),
+               dir=ifelse(log2FoldChange > 0, "up","down"),
+               timepoint=str_before_first(paste0(con),"__")) ### add timepoint with contrast
+  
+  degs_df_combo <- rbind(degs_df_combo, curr_degs_df) 
+  
+}
+
+# 
+#   ## factorize stratum and alluvium for plotting
+# ### x = columns = timepoint
+# ### stratum = flow categories = dir
+# ### alluvium = id = GeneName_id
+# curr_df <- degs_df_combo[,c("GeneName_id","dir","timepoint")] %>% ### already long format but make wider to add in not_sig
+#   pivot_wider(names_from = "timepoint", values_from = "dir", values_fill = "not_sig") %>%
+#   pivot_longer(!GeneName_id, names_to = "timepoint", values_to = "dir") %>%
+#   mutate(dir_f = factor(dir, c("up","not_sig","down")),
+#          GeneID_f = factor(GeneName_id),
+#          timepoint_f = factor(timepoint,c("D0","D7_immature_NT","D7_mature_DCs_LPSgp100"))) %>%
+#   arrange(timepoint_f,dir_f,GeneID_f)
+#   
+# 
+# 
+#    color_df <- data.frame("group"=unique(levels(curr_df$dir_f)),
+#                         "color"=c("red3","grey80","blue3"),
+#                         "outline"=c("white","black","white"))
+#  
+#   curr_color_df <- color_df[which(color_df$group %in% unique(curr_df$dir_f)),]
+# 
+#   
+#   
+#         cat("##### ",paste0("color by dir "),"\n")
+#    cat("\n")
+# 
+#   
+#       gg <- ggplot(curr_df,
+#                aes(x = timepoint_f, stratum = dir_f, alluvium = GeneID_f))+
+#         stat_alluvium(aes(fill = dir_f), width = 1/2, alpha = 1/2,) +
+#         stat_stratum(aes(stratum = dir_f, fill = dir_f), width = 1/2) +
+#         scale_fill_manual(values = curr_color_df$color)+
+#         stat_alluvium(geom = "text", aes(label = GeneID_f, fill = "black"), size = 2.5, show.legend = FALSE) + ## to label NA category
+#         stat_alluvium(geom = "text", aes(label = GeneID_f, color = "black"), size = 2.5, show.legend = FALSE) +
+#    
+#         scale_color_manual(values = curr_color_df$outline)+
+#         labs(fill="FAT1 vs WT")+
+#     theme_bw() +
+#         ylab("Genes")+
+#         xlab("Stage")+
+#         theme(axis.text=element_text(size=20),
+#         axis.title=element_text(size=20,face="bold"),
+#         legend.title = element_text(size=15),
+#         legend.text = element_text(size=15),
+#         legend.key.size = unit(1.2, 'cm'))
+# 
+#    plot(gg)
+# 
+#   cat("\n")
+#   cat(' \n \n') ### this is the key!
+#  
+#   
+#   
+   ## factorize stratum and alluvium for plotting
+### x = columns = timepoint
+### stratum = flow categories = dir but colored by combination dir (euler colors)
+### alluvium = id = GeneName_id
+curr_df <- degs_df_combo[,c("GeneName_id","dir","timepoint")] %>% ### already long format but make wider to add in not_sig
+  pivot_wider(names_from = "timepoint", values_from = "dir", values_fill = "not_sig") %>%
+  pivot_longer(!GeneName_id, names_to = "timepoint", values_to = "dir") %>%
+  
+  ##### add in euler colors
+  dplyr::left_join(rownames_to_column(annotation_row,"GeneName_id"), by = "GeneName_id") %>%
+  mutate(contrast_dir_f = factor(contrast_dir, levels(annotation_row$contrast_dir)),
+         dir_f = factor(dir, c("up","not_sig","down")),
+         GeneID_f = factor(GeneName_id),
+         timepoint_f = factor(timepoint,c("D0","D7_immature_NT","D7_mature_DCs_LPSgp100"))) %>%
+  arrange(timepoint_f,dir_f,GeneID_f)
+  
+
+
+   color_df <- data.frame(annotation_colors$contrast_dir) %>%
+     dplyr::rename(color =1) %>%
+     rownames_to_column("group") %>%
+     dplyr::mutate("outline"=c("white","white","black","white","black","white",
+                               "white","white","black","black","white","white","black"))
+   
+   
+ 
+  curr_color_df <- color_df[which(color_df$group %in% unique(curr_df$contrast_dir_f)),]
+
+  
+  
+   #      cat("##### ",paste0("color by combination dir {.active}"),"\n")
+   # cat("\n")
+   # 
+   # 
+      gg <- ggplot(curr_df,
+               aes(x = timepoint_f, stratum = dir_f, alluvium = GeneID_f))+
+        stat_alluvium(aes(fill = contrast_dir_f), width = 1/2, alpha = 1/2,) +
+        stat_stratum(aes(stratum = dir_f), fill = "white", alpha =0.2, width = 1/2) +
+        scale_fill_manual(values = curr_color_df$color)+
+        stat_alluvium(geom = "text", aes(label = GeneID_f), color = "black", size = 2.5, show.legend = FALSE) +
+   
+        scale_color_manual(values = curr_color_df$outline)+
+        labs(fill="FAT1 vs WT")+
+    theme_bw() +
+        ylab("Genes")+
+        xlab("Stage")+
+        theme(axis.text=element_text(size=20),
+        axis.title=element_text(size=20,face="bold"),
+        legend.title = element_text(size=6),
+        legend.text = element_text(size=6),
+        legend.key.size = unit(0.6, 'cm'))
+
+   plot(gg)
+
+  cat("\n")
+  cat(' \n \n') ### this is the key!
+ 
+
+```
+
+
+
+
+
+
+
+
